@@ -35,6 +35,8 @@
 :- use_module(library(http/html_head)).
 :- use_module(library(http/html_write)).
 :- use_module(library(http/http_open)).
+:- use_module(library(error)).
+:- use_module(library(option)).
 
 :- html_resource(
        recaptcha,
@@ -92,7 +94,10 @@ reCAPTCHA functionality to a form.  It works as follows:
 %		describes the available themes
 
 recaptcha(Options) -->
-	{ key(public, PublicKey),
+	{ (   key(public, PublicKey)
+	  ->  true
+	  ;   existence_error(recaptcha_key, public)
+	  ),
 	  option(theme(Theme), Options, clean)
 	},
 	html_requires(recaptcha),
@@ -139,7 +144,10 @@ recaptcha_verify(Request, Parameters) :-
 
 recaptcha_verify(Request, Challenge, Response) :-
 	remote_IP(Request, Peer),
-	key(private, PrivateKey),
+	(   key(private, PrivateKey)
+	->  true
+	;   existence_error(recaptcha_key, private)
+	),
 	setup_call_cleanup(
 	    http_open('http://www.google.com/recaptcha/api/verify',
 		      In,
