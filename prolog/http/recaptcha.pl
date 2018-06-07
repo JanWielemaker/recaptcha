@@ -1,9 +1,10 @@
 /*  Part of SWI-Prolog
 
     Author:        Jan Wielemaker
-    E-mail:        J.Wielemaker@cs.vu.nl
+    E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (C): 2013, VU University Amsterdam
+    Copyright (C): 2013-2018, VU University Amsterdam
+			      CWI, Amsterdam
 
     This program is free software; you can redistribute it and/or
     modify it under the terms of the GNU General Public License
@@ -32,18 +33,11 @@
 	    recaptcha_parameters/1,	% -HTTP parameter list
 	    recaptcha_verify/2		% +Request, +HTTPParamList
 	  ]).
-:- use_module(library(http/html_head)).
 :- use_module(library(http/html_write)).
 :- use_module(library(http/http_open)).
-:- use_module(library(error)).
 :- use_module(library(option)).
-
-:- html_resource(
-       recaptcha,
-       [ virtual(true),
-	 requires([ 'http://www.google.com/recaptcha/api/js/recaptcha_ajax.js'
-		  ])
-       ]).
+:- use_module(library(debug)).
+:- use_module(library(http/json)).
 
 /** <module> Add reCAPTCHA functionality to a form
 
@@ -77,11 +71,16 @@ reCAPTCHA functionality to a form.  It works as follows:
 		).
 
 @see examples/demo.pl contains a fully functional demo.
+@compat This library is compliant with Google recaptcha v2.
 */
 
 
 :- multifile
 	key/2.
+
+test_key(public,  '6LeIxAcTAAAAAJcZVRqyHh71UMIEGNQ_MXjiZKhI').
+test_key(private, '6LeIxAcTAAAAAGG-vFI1TnRWxMZNFuojJ4WifJWe').
+
 
 %%	recaptcha(+Options)// is det.
 %
@@ -96,24 +95,18 @@ reCAPTCHA functionality to a form.  It works as follows:
 recaptcha(Options) -->
 	{ (   key(public, PublicKey)
 	  ->  true
-	  ;   existence_error(recaptcha_key, public)
+	  ;   test_key(public, PublicKey)
 	  ),
 	  option(theme(Theme), Options, clean)
 	},
-	html_requires(recaptcha),
-	html(div(id(recaptcha), [])),
-	create_captcha(recaptcha, PublicKey, Theme).
-
-
-create_captcha(Id, PublicKey, Theme) -->
-	html(script(type('text/javascript'),
-		    \[ 'Recaptcha.create("',PublicKey,'",\n',
-		       '                 "',Id,'",\n',
-		       '                 {\n',
-		       '		     theme:"',Theme,'"\n',
-		       '                 });\n'
-		     ])).
-
+	html_post(head, script([src('https://www.google.com/recaptcha/api.js'),
+				async(async),
+				defer(defer)
+			       ], [])),
+	html(div([ class('g-recaptcha'),
+		   'data-theme'(Theme),
+		   'data-sitekey'(PublicKey)
+		 ], [])).
 
 %%	recaptcha_parameters(-List) is det.
 %
@@ -121,8 +114,7 @@ create_captcha(Id, PublicKey, Theme) -->
 %	needed for recaptcha_verify/2.
 
 recaptcha_parameters(
-    [ recaptcha_challenge_field(_Challenge, []),
-      recaptcha_response_field(_Response, [])
+    [ 'g-recaptcha-response'(_Response, [])
     ]).
 
 
@@ -138,45 +130,32 @@ recaptcha_parameters(
 %		lists the errors.
 
 recaptcha_verify(Request, Parameters) :-
-	memberchk(recaptcha_challenge_field(Challenge, _), Parameters),
-	memberchk(recaptcha_response_field(Response, _), Parameters),
-	recaptcha_verify(Request, Challenge, Response).
-
-recaptcha_verify(Request, Challenge, Response) :-
+	memberchk('g-recaptcha-response'(Response, _), Parameters),
 	remote_IP(Request, Peer),
 	(   key(private, PrivateKey)
 	->  true
-	;   existence_error(recaptcha_key, private)
+	;   test_key(private, PrivateKey)
 	),
+	debug(recaptcha, 'Verify: response ~p for IP ~p', [Response, Peer]),
 	setup_call_cleanup(
-	    http_open('http://www.google.com/recaptcha/api/verify',
+	    http_open('https://www.google.com/recaptcha/api/siteverify',
 		      In,
-		      [ post(form([ privatekey(PrivateKey),
+		      [ post(form([ secret(PrivateKey),
 				    remoteip(Peer),
-				    challenge(Challenge),
 				    response(Response)
 				  ]))
 		      ]),
-	    read_stream_to_lines(In, Lines),
+	    json_read_dict(In, Dict),
 	    close(In)),
-	maplist(atom_codes, Atoms, Lines),
-	(   Atoms = [true|_]
+	debug(recaptcha, 'Recaptcha verify: ~p', [Dict]),
+	(   is_dict(Dict, _),
+	    Dict.get(success) == true
 	->  true
-	;   Atoms = [false, 'incorrect-captcha-sol'|_]
+	;   is_dict(Dict, _),
+	    Dict.get(success) == false
 	->  fail
-	;   Atoms = [false, Error, _],
-	    throw(error(recaptcha_error(Error), _))
+	;   throw(error(recaptcha_error(Dict), _))
 	).
-
-
-read_stream_to_lines(In, Lines) :-
-	read_line_to_codes(In, Line0),
-	read_stream_to_lines(Line0, In, Lines).
-
-read_stream_to_lines(end_of_file, _, []) :- !.
-read_stream_to_lines(Line, In, [Line|More]) :-
-	read_line_to_codes(In, Line1),
-	read_stream_to_lines(Line1, In, More).
 
 
 remote_IP(Request, IP) :-
@@ -209,5 +188,7 @@ peer_to_ip(ip(A,B,C,D), IP) :-
 %	  recaptcha:key(public,  'Public key goes here').
 %	  recaptcha:key(private, 'Private key goes here').
 %	  ==
+%
+%	When missing, a reserved test key pair is used.
 
 
